@@ -14,5 +14,5 @@ The following two modifications need to be done on the infrastructure:
  
 Please send us back the revised and updated template as a solution to the task.
 
-Yaml template can be downloaded here: https://drive.google.com/file/d/16d_BDH6Q5Kz5I1xI44lwXIQ8mIr42YC5/view?usp=sharing
+Yaml template can be downloaded here:
 
