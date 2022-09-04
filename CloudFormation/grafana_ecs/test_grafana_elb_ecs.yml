@@ -1,0 +1,893 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Test application infrastructure
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+    Default: dev
+    Description: Name of the environment that this stack creates (e.g. 'dev', 'prod', etc.).
+
+  ProjectName:
+    Description: This will be used for for resource names, keyname and tagging
+    Type: String
+    Default: Test
+
+  VpcCidr:
+    Description: What is the CIDR Block of IPv4 IP addresses for VPC?
+    Type: String
+    AllowedPattern: "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?).){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/([0-9]|[1-2][0-9]|3[0-2]))?$"
+    Default: 10.1.0.0/16
+    ConstraintDescription: The value must be valid IPv4 CIDR block.
+
+  WebKeyPair:
+    Description: Which Key Pair would you like to use for remote access to Web server?
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Key Pair must exist
+
+  BastionKeyPair:
+    Description: Which Key Pair would you like to use for remote access to Bastion host?
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Key Pair must exist
+
+  BastionSourceCidr:
+    Description: What is the CIDR Block of IPv4 IP addresses allowed to access your Bastion Host via RDP?
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?).){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/([0-9]|[1-2][0-9]|3[0-2]))?$"
+    ConstraintDescription: The value must be valid IPv4 CIDR block.
+
+  PublicSubnetAZaCidr:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the Availability Zone "A"
+    Type: String
+    Default: 10.1.10.0/24
+
+  PublicSubnetAZbCidr:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the Availability Zone "B"
+    Type: String
+    Default: 10.1.11.0/24
+
+  PrivateSubnetAZaCidr:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the Availability Zone "A"
+    Type: String
+    Default: 10.1.20.0/24
+
+  PrivateSubnetAZbCidr:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the Availability Zone "B"
+    Type: String
+    Default: 10.1.21.0/24
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Project template"
+        Parameters:
+          - ProjectName
+          - Environment
+          - VpcCidr
+          - PublicSubnetAZaCidr
+          - PublicSubnetAZbCidr
+          - PrivateSubnetAZaCidr
+          - PrivateSubnetAZbCidr
+          - BastionSourceCidr
+          - BastionKeyPair
+          - WebKeyPair
+
+    ParameterLabels:
+      ProjectName:
+        default: "Project"
+      Environment:
+        default: "Name"
+      VpcCidr:
+        default: "VPC CIDR"
+      PublicSubnetAZaCidr:
+        default: "PublicSubnet A"
+      PublicSubnetAZbCidr:
+        default: "PublicSubnet B"
+
+      PrivateSubnetAZaCidr:
+        default: "PrivateSubnet A"
+      PrivateSubnetAZbCidr:
+        default: "PrivateSubnet B"
+      BastionSourceCidr:
+        default: "Source IP"
+      BastionKeyPair:
+        default: "Bastion KEY"
+      WebKeyPair:
+        default: "Web site KEY"
+
+Mappings:
+  EnvMap:
+    dev:
+      #Web server
+      BastionServerAmiId: ami-05fa00d4c63e32376
+      LinuxServerAmiId: ami-05fa00d4c63e32376
+      GrafanaServerAmiId: ami-05fa00d4c63e32376
+      WebsiteInstanceType: "t2.micro"
+      WebsiteVolumeSize: 30
+      WebsiteDesiredCapacity: 1
+      WebsiteMaxSize: 1
+      WebsiteMinSize: 1
+      #Redis
+      RedisCacheNodeType: "cache.t2.micro"
+
+    prod:
+      #Web server
+      BastionServerAmiId: ami-05fa00d4c63e32376
+      LinuxServerAmiId: ami-05fa00d4c63e32376
+      GrafanaServerAmiId: ami-05fa00d4c63e32376
+      WebsiteInstanceType: "t2.micro"
+      WebsiteVolumeSize: 40
+      WebsiteDesiredCapacity: 2
+      WebsiteMaxSize: 2
+      WebsiteMinSize: 2
+      #Redis
+      RedisCacheNodeType: "cache.t2.small"
+
+Resources:
+  #Network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} InternetGateway
+
+  VpcInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public and private subnets
+  PublicSubnetAZa:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetAZaCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} public-subnet-a
+
+  PublicSubnetAZb:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetAZbCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} public-subnet-b
+
+  PrivateSubnetAZa:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnetAZaCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} private-subnet-a
+
+  PrivateSubnetAZb:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnetAZbCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} private-subnet-b
+
+  #NetworkAclEntry
+  NetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} NetworkAcl
+
+  Acl1:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: 100
+      NetworkAclId: !Ref NetworkAcl
+
+  Acl2:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: 100
+      NetworkAclId: !Ref NetworkAcl
+
+  #Routes
+  PublicSubnetAZaRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetAZa
+
+  PublicSubnetAZbRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetAZb
+
+  PrivateSubnetAZaRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      SubnetId: !Ref PrivateSubnetAZa
+
+  PrivateSubnetAZbRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      SubnetId: !Ref PrivateSubnetAZb
+
+  RouteToInternetGateway:
+    Type: AWS::EC2::Route
+    DependsOn: VpcInternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PublicRouteTable
+      GatewayId: !Ref InternetGateway
+
+  RouteToNATA:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivateRouteTableA
+      NatGatewayId: !Ref NATGatewayA
+
+  RouteToNATB:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivateRouteTableB
+      NatGatewayId: !Ref NATGatewayB
+
+  # SubnetNetworkAclAssociation
+  SubnetAclPublicA:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref PublicSubnetAZa
+
+  SubnetAclPublicB:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref PublicSubnetAZb
+
+  SubnetAclPrivateA:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref PrivateSubnetAZa
+
+  SubnetAclPrivateB:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref PrivateSubnetAZb
+
+  # NatGateway
+  ElasticIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} EIP1
+
+  ElasticIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} EIP2
+
+  NATGatewayA:
+    Type: AWS::EC2::NatGateway
+    DependsOn: VpcInternetGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt ElasticIP1.AllocationId
+      SubnetId: !Ref PublicSubnetAZa
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} NAT1
+
+  NATGatewayB:
+    Type: AWS::EC2::NatGateway
+    DependsOn: VpcInternetGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt ElasticIP2.AllocationId
+      SubnetId: !Ref PublicSubnetAZb
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} NAT2
+
+  # Public & Private route table creation and association
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} PublicRoute
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} PrivateRoute-A
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} PrivateRoute-B
+
+  #####LoadBalancer
+  ##  WebsiteELB
+  WebsiteLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: "WebsiteELB"
+      SecurityGroups: [!Ref WebsiteELBSecurityGroup]
+      Subnets:
+        - !Ref PublicSubnetAZa
+        - !Ref PublicSubnetAZb
+      IpAddressType: "ipv4"
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} ELB
+
+  HTTPELBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref WebsiteELBTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref WebsiteLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  WebsiteELBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "60"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: "/"
+      HealthCheckPort: "80"
+      HealthCheckProtocol: "HTTP"
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: "200"
+      Name: Website-ELB
+      Port: 80
+      Protocol: "HTTP"
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} WebsiteELBTargetGroup
+
+  #AutoScalingGroup
+  WebsiteScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !FindInMap [EnvMap, !Ref Environment, WebsiteDesiredCapacity]
+        Timeout: "PT25M"
+    Properties:
+      AvailabilityZones:
+        - !Select [0, !GetAZs ""]
+        - !Select [1, !GetAZs ""]
+      Cooldown: "150"
+      DesiredCapacity:
+        !FindInMap [EnvMap, !Ref Environment, WebsiteDesiredCapacity]
+      HealthCheckGracePeriod: 300
+      HealthCheckType: "EC2"
+      LaunchConfigurationName: !Ref WebsiteLaunchConfiguration
+      MaxSize: !FindInMap [EnvMap, !Ref Environment, WebsiteVolumeSize]
+      MinSize: !FindInMap [EnvMap, !Ref Environment, WebsiteMinSize]
+      TargetGroupARNs: [!Ref WebsiteELBTargetGroup]
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetAZa
+        - !Ref PublicSubnetAZb
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Website
+          PropagateAtLaunch: true
+
+  #LaunchConfiguration
+  WebsiteLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      KeyName: !Ref WebKeyPair
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: !FindInMap [EnvMap, !Ref Environment, WebsiteVolumeSize]
+      ImageId: !FindInMap [EnvMap, !Ref Environment, LinuxServerAmiId]
+      InstanceType: !FindInMap [EnvMap, !Ref Environment, WebsiteInstanceType]
+      SecurityGroups: [!Ref WebsiteSecurityGroup]
+      IamInstanceProfile: !Ref WebIamProfile
+      UserData:
+        Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           yum update -y aws-cfn-bootstrap
+           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource WebServer --configsets wordpress_install --region ${AWS::Region}
+           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource WebServer --region ${AWS::Region}
+
+  ## REDIS
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: !Sub ${ProjectName} Redis Subnet Group
+      SubnetIds:
+        - !Ref PrivateSubnetAZb
+        - !Ref PrivateSubnetAZa
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} RedisSubnetGroup
+
+  RedisCacheCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    DeletionPolicy: Snapshot
+    Properties:
+      ClusterName: Test
+      CacheNodeType: !FindInMap [EnvMap, !Ref Environment, RedisCacheNodeType]
+      CacheParameterGroupName: !Ref RedisParameterGroup
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds: [!GetAtt RedisSecurityGroup.GroupId]
+      Engine: redis
+      EngineVersion: 5.0.4
+      NumCacheNodes: 1
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} RedisCacheCluster
+
+  RedisParameterGroup:
+    Type: AWS::ElastiCache::ParameterGroup
+    Properties:
+      CacheParameterGroupFamily: redis5.0
+      Description: !Sub ${ProjectName} RedisParameterGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} RedisParameterGroup
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName} RedisSecurityGroup
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Redis.SG
+
+  RedisSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RedisSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref WebsiteELBSecurityGroup
+
+  #Bastion host
+  BastionA:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref BastionKeyPair
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: !FindInMap [EnvMap, !Ref Environment, WebsiteVolumeSize]
+      ImageId: !FindInMap [EnvMap, !Ref Environment, BastionServerAmiId]
+      InstanceType: !FindInMap [EnvMap, !Ref Environment, WebsiteInstanceType]
+      InstanceInitiatedShutdownBehavior: stop
+      DisableApiTermination: false
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref BastionSecurityGroup
+          SubnetId: !Ref PublicSubnetAZa
+      UserData:
+        Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           yum update -y aws-cfn-bootstrap
+           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource WebServer --configsets wordpress_install --region ${AWS::Region}
+           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource WebServer --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} BastionA
+
+  BastionB:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref BastionKeyPair
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: !FindInMap [EnvMap, !Ref Environment, WebsiteVolumeSize]
+      ImageId: !FindInMap [EnvMap, !Ref Environment, BastionServerAmiId]
+      InstanceType: !FindInMap [EnvMap, !Ref Environment, WebsiteInstanceType]
+      InstanceInitiatedShutdownBehavior: stop
+      DisableApiTermination: false
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref BastionSecurityGroup
+          SubnetId: !Ref PublicSubnetAZb
+      UserData:
+        Fn::Base64:
+          Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           yum update -y aws-cfn-bootstrap
+           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource WebServer --configsets wordpress_install --region ${AWS::Region}
+           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource WebServer --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} BastionB
+
+  BastionEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref BastionA
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} BastionEIP1
+
+  BastionEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref BastionB
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} BastionEIP2
+
+  #ECS Grafana ELB-monitoring
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: grafana-cluster
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: grafana-log-group
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: grafana-task
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Ref GrafanaRole
+      ContainerDefinitions:
+        - Name: grafana-container
+          Image: grafana/grafana
+          PortMappings:
+            - ContainerPort: 3000
+              HostPort: 3000
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+          Essential: true
+      RequiresCompatibilities:
+        - FARGATE
+        - EC2
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: grafanaELB-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DesiredCount: 1
+      LaunchType: FARGATE
+      Role: !Ref GrafanaRole
+      LoadBalancers:
+        - ContainerName: grafana-container
+          ContainerPort: 3000
+          LoadBalancerName: !Ref WebsiteLoadBalancer
+
+  #SecurityGroup
+  WebsiteELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupName: Website.ELBSecurityGroup
+      GroupDescription: Website ELB Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Website.ELB.SG
+
+  WebsiteSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupName: Website.WebsiteSecurityGroup
+      GroupDescription: Website Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref WebsiteELBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref RedisSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          SourceSecurityGroupId: !Ref ContainerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          DestinationSecurityGroupId: !Ref ContainerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Website.SG
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupName: Bastion.BastionSecurityGroup
+      GroupDescription: Bastion Host Security Group
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Bastion.SG
+
+  BastionSecurityGroupIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref BastionSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref BastionSourceCidr
+
+  BastionSecurityGroupEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref BastionSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      DestinationSecurityGroupId: !Ref WebsiteSecurityGroup
+
+  ContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupName: GrafanaELBSecurityGroup
+      GroupDescription: Security group for Grafana container
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Grafana.SG
+
+  ContainerSecurityGroupIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ContainerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 9090
+      ToPort: 9090
+      CidrIp: 0.0.0.0/0
+
+  #Policys
+  Ec2Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${Environment}.Ec2Policy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "ec2:DescribeSecurityGroups"
+              - "ec2:Describe*"
+              - "ec2:Get*"
+            Resource: "*"
+      Roles:
+        - !Ref WebRole
+
+  CloudWatchPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${Environment}.CloudWatchPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "cloudwatch:PutMetricData"
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:DescribeLogGroups"
+              - "logs:DescribeLogStreams"
+              - "logs:PutLogEvents"
+            Resource: "*"
+      Roles:
+        - !Ref WebRole
+
+  GrafanaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${Environment}.GrafanaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "cloudwatch:DescribeAlarmsForMetric"
+              - "cloudwatch:DescribeAlarmHistory"
+              - "cloudwatch:DescribeAlarms"
+              - "cloudwatch:ListMetrics"
+              - "cloudwatch:GetMetricData"
+              - "cloudwatch:GetInsightRuleReport"
+              - "ec2:DescribeTags"
+              - "ec2:DescribeInstances"
+              - "ec2:DescribeRegions"
+              - "tag:GetResources"
+            Resource: "*"
+      Roles:
+        - !Ref GrafanaRole
+  # Role
+  WebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} WebRole
+
+  GrafanaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: grafana-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # IAM Profile
+  WebIamProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles: [!Ref WebRole]
+
+  GrafanaIamProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles: [!Ref GrafanaRole]
+
+#Outputs
+Outputs:
+  Vpc:
+    Description: A reference to the created VPC
+    Value: !Ref Vpc
+
+  PublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [",", [!Ref PublicSubnetAZa, !Ref PublicSubnetAZb]]
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [",", [!Ref PrivateSubnetAZa, !Ref PrivateSubnetAZb]]
+
+  PublicSubnetA:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref PublicSubnetAZa
+
+  PublicSubnetB:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref PublicSubnetAZb
+
+  PrivateSubnetA:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnetAZa
+
+  PrivateSubnetB:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnetAZb
+
+  BastionAllowedCIDR:
+    Description: What is the CIDR Block of IPv4 IP addresses allowed to access your Bastion Host via RDP?
+    Value: !Ref BastionSourceCidr
+
+  BastionIPA:
+    Description: A reference to the Bastion EIP in the 1st Availability Zone
+    Value: !Ref BastionEIP1
+
+  BastionIPB:
+    Description: A reference to the Bastion EIP in the 2nd Availability Zone
+    Value: !Ref BastionEIP2
+
+  LoadBalancer:
+    Description: A reference to the Web site LoadBalancer
+    Value: !Ref WebsiteLoadBalancer
+
+  Cluster:
+    Value: !Ref ECSCluster
